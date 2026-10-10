@@ -266,11 +266,64 @@ export async function setRoutineEnabled(
   enabled: boolean,
   dryRun = false,
 ): Promise<{ status?: string; dryRun?: boolean; current?: string; wouldSet?: string }> {
+  const r = await findRoutine(alexa, automationId);
+  if (dryRun) return { dryRun: true, current: r.status, wouldSet: enabled ? "ENABLED" : "DISABLED" };
+
+  const body = await rebuildWriteBody(alexa, r, { status: enabled ? "ENABLED" : "DISABLED" });
+  await withBackoff(() =>
+    raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body)));
+
+  // Verify.
+  const status = (await findRoutine(alexa, automationId)).status;
+  return { status };
+}
+
+/**
+ * Rename an existing routine, keeping everything else as it is: all triggers
+ * (including every utterance variant), all actions, and the status. Uses the same
+ * rebuild-and-PUT mechanism as setRoutineEnabled, so it works for routines that
+ * alexa_update_routine cannot express (several utterances, skill actions, …).
+ * dryRun builds and returns the write body without sending it.
+ */
+export async function renameRoutine(
+  alexa: AlexaRemote,
+  automationId: string,
+  name: string,
+  dryRun = false,
+): Promise<{ name?: string; dryRun?: boolean; current?: string; wouldSet?: string; body?: Record<string, unknown> }> {
+  const r = await findRoutine(alexa, automationId);
+  const body = await rebuildWriteBody(alexa, r, { name });
+  if (dryRun) return { dryRun: true, current: r.name, wouldSet: name, body };
+
+  const res: any = await withBackoff(() =>
+    raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body)));
+  if (res && typeof res === "object" && !res.automationId && typeof res.message === "string") {
+    throw new Error(`Alexa rejected the routine write: ${res.message}`);
+  }
+
+  // Verify.
+  const after = (await findRoutine(alexa, automationId)).name;
+  if (after !== name) throw new Error(`Rename not applied: routine is still named "${after}".`);
+  return { name: after };
+}
+
+async function findRoutine(alexa: AlexaRemote, automationId: string): Promise<any> {
   const routines: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
   const r = (Array.isArray(routines) ? routines : []).find((x: any) => x.automationId === automationId);
   if (!r) throw new Error(`No routine with automationId=${automationId}`);
-  if (dryRun) return { dryRun: true, current: r.status, wouldSet: enabled ? "ENABLED" : "DISABLED" };
+  return r;
+}
 
+/**
+ * Rebuild a routine's full write body from its current (read) state: re-encode
+ * the triggers and re-validate each action's operationPayload, then apply the
+ * overrides (name and/or status).
+ */
+async function rebuildWriteBody(
+  alexa: AlexaRemote,
+  r: any,
+  overrides: { name?: string; status?: "ENABLED" | "DISABLED" },
+): Promise<Record<string, unknown>> {
   // Re-encode triggers (write form: double-encoded payload).
   const triggers = (r.triggers ?? []).map((t: any) => ({
     "@type": T_JAVA,
@@ -297,19 +350,12 @@ export async function setRoutineEnabled(
   const sequence = { "@type": SEQUENCE, startNode };
 
   const triggerJsons = triggers.map((t: any) => JSON.stringify(t));
-  const body: Record<string, unknown> = {
-    behaviorId: automationId,
-    name: r.name,
-    status: enabled ? "ENABLED" : "DISABLED",
+  return {
+    behaviorId: r.automationId,
+    name: overrides.name ?? r.name,
+    status: overrides.status ?? r.status,
     triggerJson: triggerJsons[0],
     triggerJsonList: triggerJsons,
     sequenceJson: JSON.stringify(sequence),
   };
-  await withBackoff(() =>
-    raw(alexa, "PUT", `/api/behaviors/automations/${encodeURIComponent(automationId)}`, JSON.stringify(body)));
-
-  // Verify.
-  const after: any = await call((cb) => alexa.getAutomationRoutines(2000, cb));
-  const status = (Array.isArray(after) ? after : []).find((x: any) => x.automationId === automationId)?.status;
-  return { status };
 }

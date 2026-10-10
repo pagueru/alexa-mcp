@@ -7,6 +7,7 @@ import {
   actionNode,
   accountContext,
   writeRoutine,
+  renameRoutine,
 } from "../dist/routines.js";
 
 const ctx = { customerId: "CUST1", marketplaceId: "MKT1", locale: "de-DE" };
@@ -134,4 +135,61 @@ test("locale and schedule timezone default to the env configuration", async () =
   } finally {
     keys.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
   }
+});
+
+// Read-shaped routine with two utterance variants, as getAutomationRoutines returns it.
+const storedRoutine = () => ({
+  automationId: "amzn1.alexa.automation.r1",
+  name: "Old name",
+  status: "DISABLED",
+  triggers: [{
+    type: "CustomUtterance",
+    skillId: null,
+    payload: { utterance: "lights on", utterances: ["lights on", "turn the lights on"], locale: "en-US" },
+  }],
+  sequence: {
+    "@type": "com.amazon.alexa.behaviors.model.Sequence",
+    startNode: {
+      "@type": "com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode",
+      type: "Alexa.TextCommand",
+      skillId: "amzn1.ask.1p.tellalexa",
+      operationPayload: { text: "what time is it" },
+    },
+  },
+});
+
+// Stand-in that serves one stored routine and applies PUTs to it.
+const fakeAlexaWithRoutine = (routine) => {
+  const alexa = fakeAlexa({});
+  const httpsGet = alexa.httpsGet;
+  alexa.getAutomationRoutines = (_limit, cb) => cb(null, [routine]);
+  alexa.httpsGet = (noCheck, path, cb, flags) => {
+    if (flags?.method === "PUT") {
+      alexa.calls.push({ path, flags });
+      routine.name = JSON.parse(flags.data).name;
+      return cb(null, { automationId: routine.automationId });
+    }
+    return httpsGet(noCheck, path, cb, flags);
+  };
+  return alexa;
+};
+
+test("renameRoutine dryRun keeps every utterance, the actions and the status", async () => {
+  const res = await renameRoutine(fakeAlexaWithRoutine(storedRoutine()), "amzn1.alexa.automation.r1", "Light - Hall - On", true);
+  assert.equal(res.current, "Old name");
+  assert.equal(res.body.name, "Light - Hall - On");
+  assert.equal(res.body.status, "DISABLED");
+  assert.equal(res.body.behaviorId, "amzn1.alexa.automation.r1");
+  const trigger = JSON.parse(res.body.triggerJson);
+  assert.deepEqual(JSON.parse(trigger.payload).utterances, ["lights on", "turn the lights on"]);
+  assert.equal(JSON.parse(res.body.sequenceJson).startNode.operationPayload.text, "what time is it");
+});
+
+test("renameRoutine PUTs the new name and verifies it", async () => {
+  const routine = storedRoutine();
+  const alexa = fakeAlexaWithRoutine(routine);
+  const res = await renameRoutine(alexa, "amzn1.alexa.automation.r1", "Light - Hall - On");
+  assert.equal(res.name, "Light - Hall - On");
+  assert.ok(alexa.calls.some((c) => c.flags?.method === "PUT" && c.path === "/api/behaviors/automations/amzn1.alexa.automation.r1"));
+  await assert.rejects(renameRoutine(alexa, "amzn1.alexa.automation.missing", "x"), { message: /No routine/ });
 });

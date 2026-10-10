@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
-import { writeRoutine, setRoutineEnabled, type TriggerSpec } from "./routines.js";
+import { writeRoutine, setRoutineEnabled, renameRoutine, type TriggerSpec } from "./routines.js";
 import { flattenAppliances, collectRoutineTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
@@ -696,6 +696,34 @@ if (ALLOW_WRITE) {
         const alexa = await getAlexa();
         const res = await setRoutineEnabled(alexa, automationId, enabled, dryRun);
         return ok(dryRun ? res : { automationId, requested: enabled ? "ENABLED" : "DISABLED", status: (res as any).status });
+      } catch (e: any) {
+        return fail(hint(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "alexa_rename_routine",
+    {
+      title: "Rename a routine",
+      description:
+        "Renames an existing routine (by automationId) and keeps everything else: every trigger, " +
+        "every utterance variant, all actions and the status. Rebuilds the write body from the " +
+        "routine's current state (like alexa_set_routine_enabled), so it also works for routines " +
+        "alexa_update_routine cannot express. Verifies the new name. dryRun returns the body " +
+        "without sending it. Requires confirm:true.",
+      inputSchema: {
+        automationId: z.string(),
+        name: z.string().min(1),
+        dryRun: z.boolean().optional(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ automationId, name, dryRun }) => {
+      try {
+        const alexa = await getAlexa();
+        const res = await renameRoutine(alexa, automationId, name, dryRun);
+        return ok(dryRun ? res : { automationId, renamed: res.name });
       } catch (e: any) {
         return fail(hint(e));
       }
