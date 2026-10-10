@@ -83,13 +83,14 @@ export async function updateGroup(
 /**
  * Moves devices to another group: removes them from whichever group holds them, then
  * adds them to the target. If the add fails, the previous membership is restored.
- * `delayMs` is the pause between the two writes (Amazon needs a moment to release them).
+ * `delayMs` is the base pause before each add attempt (attempt n waits n × delayMs).
  */
 export async function moveToGroup(
   alexa: AlexaRemote,
   applianceIds: string[],
   toGroupId: string,
   delayMs = 1500,
+  attempts = 4,
 ): Promise<{ moved: string[]; from: string[]; to: string }> {
   const groups = await readGroups(alexa);
   const target = groups.find((g) => g.groupId === toGroupId);
@@ -101,17 +102,25 @@ export async function moveToGroup(
   for (const s of sources) {
     await updateGroup(alexa, s.groupId, { applianceIds: s.applianceIds.filter((id) => !applianceIds.includes(id)) });
   }
-  if (sources.length && delayMs) await sleep(delayMs);
-
-  try {
-    await updateGroup(alexa, toGroupId, { applianceIds: [...new Set([...target.applianceIds, ...applianceIds])] });
-  } catch (e: any) {
-    for (const s of sources) {
-      await updateGroup(alexa, s.groupId, { applianceIds: s.applianceIds }).catch(() => undefined);
+  // Amazon releases a device from its old group with a variable delay (measured: the same
+  // add was refused after 1.5 s and accepted right after), so retry with a growing pause.
+  let lastError: any;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (sources.length && delayMs) await sleep(delayMs * attempt);
+    try {
+      await updateGroup(alexa, toGroupId, { applianceIds: [...new Set([...target.applianceIds, ...applianceIds])] });
+      return { moved: applianceIds, from: sources.map((s) => s.name), to: target.name };
+    } catch (e: any) {
+      lastError = e;
     }
-    throw new Error(`Move failed, previous membership restored: ${e?.message ?? e}`);
   }
-  return { moved: applianceIds, from: sources.map((s) => s.name), to: target.name };
+  for (const s of sources) {
+    await updateGroup(alexa, s.groupId, { applianceIds: s.applianceIds }).catch(() => undefined);
+  }
+  throw new Error(
+    `Move failed, previous membership restored: ${lastError?.message ?? lastError} ` +
+      "A device added to a group recently may need a few minutes before it can join another one.",
+  );
 }
 
 /**

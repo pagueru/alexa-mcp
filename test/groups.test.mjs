@@ -83,3 +83,18 @@ test("renameDevice throws on an unknown device or a rename that did not apply", 
   await assert.rejects(renameDevice(fakeDevices(), "nope", "x"), { message: /No device/ });
   await assert.rejects(renameDevice(fakeDevices({ stuck: true }), "SN1", "x"), { message: /Rename not applied/ });
 });
+
+test("moveToGroup retries the add while Amazon still holds the device in the old group", async () => {
+  const alexa = fakeGroups(house());
+  let refusals = 2;
+  const put = alexa.httpsGet;
+  alexa.httpsGet = (noCheck, path, cb, flags) => {
+    const body = JSON.parse(flags.data);
+    if (path.endsWith("/g2") && body.applianceIds.includes(ECHO) && refusals-- > 0) {
+      return cb(null, { success: true }); // accepted, but the member is not stored
+    }
+    return put(noCheck, path, cb, flags);
+  };
+  await moveToGroup(alexa, [ECHO], "g2", 0);
+  assert.ok(alexa.groups[1].applianceIds.includes(ECHO));
+});
