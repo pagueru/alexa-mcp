@@ -124,7 +124,11 @@ export async function validateOperation(
   return (op ?? operationPayload) as Record<string, unknown>;
 }
 
-export interface UtteranceTrigger { kind: "utterance"; utterance: string; }
+export interface UtteranceTrigger {
+  kind: "utterance";
+  utterance: string;
+  utterances?: string[]; // all phrase variants (the app allows several); defaults to [utterance]
+}
 export interface ScheduleTrigger {
   kind: "schedule";
   time: string;          // "HH:MM"
@@ -136,12 +140,13 @@ export type TriggerSpec = UtteranceTrigger | ScheduleTrigger;
 /** Builds a trigger object with its double-encoded `payload` string. */
 export function buildTrigger(spec: TriggerSpec, ctx: AccountContext): any {
   if (spec.kind === "utterance") {
+    const utterances = spec.utterances?.length ? spec.utterances : [spec.utterance];
     const payload = {
       "@type": UTTER_PAYLOAD,
       locale: ctx.locale,
       marketplaceId: ctx.marketplaceId,
-      utterance: spec.utterance,
-      utterances: [spec.utterance],
+      utterance: utterances[0],
+      utterances,
       customerId: ctx.customerId,
       person: null,
     };

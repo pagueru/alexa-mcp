@@ -595,6 +595,7 @@ if (ALLOW_WRITE) {
   const routineWriteShape = {
     name: z.string(),
     triggerUtterance: z.string().optional(),
+    triggerUtterances: z.array(z.string().min(1)).min(1).optional(),
     triggerTime: z.string().optional(),
     triggerDays: z.array(z.string()).optional(),
     triggerTimeZone: z.string().optional(),
@@ -607,6 +608,8 @@ if (ALLOW_WRITE) {
   } as const;
 
   const buildTriggerSpec = (a: any): TriggerSpec | null => {
+    if (a.triggerUtterances?.length)
+      return { kind: "utterance", utterance: a.triggerUtterances[0], utterances: a.triggerUtterances };
     if (a.triggerUtterance) return { kind: "utterance", utterance: a.triggerUtterance };
     if (a.triggerTime)
       return { kind: "schedule", time: a.triggerTime, days: a.triggerDays, timeZoneId: a.triggerTimeZone };
@@ -619,7 +622,8 @@ if (ALLOW_WRITE) {
       title: "Create a routine",
       description:
         "Creates a routine (POST /api/behaviors/automations, verified). Give a trigger — either " +
-        "triggerUtterance (voice phrase) or triggerTime 'HH:MM' (+ optional triggerDays like " +
+        "triggerUtterance (voice phrase) or triggerUtterances (several phrase variants) or " +
+        "triggerTime 'HH:MM' (+ optional triggerDays like " +
         "['MO','TU'] and triggerTimeZone) — and one or more actions {type, operationPayload}. " +
         "Each action's operationPayload is server-normalized via /operation/validate. For " +
         "Alexa.TextCommand pass operationPayload {text} (deviceType/deviceSerialNumber/locale/" +
@@ -651,7 +655,7 @@ if (ALLOW_WRITE) {
       title: "Update a routine",
       description:
         "Updates a routine (PUT /api/behaviors/automations/{id}, verified). Send the full desired " +
-        "state: automationId + name + trigger (triggerUtterance or triggerTime) + actions. Same " +
+        "state: automationId + name + trigger (triggerUtterance, triggerUtterances or triggerTime) + actions. Same " +
         "action shape as alexa_create_routine. Requires confirm:true.",
       inputSchema: { automationId: z.string(), ...routineWriteShape },
     },

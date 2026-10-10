@@ -193,3 +193,10 @@ test("renameRoutine PUTs the new name and verifies it", async () => {
   assert.ok(alexa.calls.some((c) => c.flags?.method === "PUT" && c.path === "/api/behaviors/automations/amzn1.alexa.automation.r1"));
   await assert.rejects(renameRoutine(alexa, "amzn1.alexa.automation.missing", "x"), { message: /No routine/ });
 });
+
+test("utterance trigger carries every phrase variant", () => {
+  const t = buildTrigger({ kind: "utterance", utterance: "lights on", utterances: ["lights on", "turn the lights on"] }, ctx);
+  const p = JSON.parse(t.payload);
+  assert.equal(p.utterance, "lights on");
+  assert.deepEqual(p.utterances, ["lights on", "turn the lights on"]);
+});
