@@ -98,14 +98,15 @@ const fakeAlexa = (writeResponse) => {
 
 const routineSpec = {
   name: "R",
-  trigger: { kind: "utterance", utterance: "que horas são" },
-  actions: [{ type: "Alexa.TextCommand", operationPayload: { text: "que horas são" } }],
+  trigger: { kind: "utterance", utterance: "what time is it" },
+  actions: [{ type: "Alexa.TextCommand", operationPayload: { text: "what time is it" } }],
 };
 
 test("writeRoutine throws when Alexa rejects the write with a message", async () => {
   for (const message of ["Input failed to validate.", "Object not found."]) {
-    const alexa = fakeAlexa({ message });
-    await assert.rejects(writeRoutine(alexa, routineSpec), new RegExp(message.replace(".", "\\.")));
+    await assert.rejects(writeRoutine(fakeAlexa({ message }), routineSpec), {
+      message: `Alexa rejected the routine write: ${message}`,
+    });
   }
   const ok = await writeRoutine(fakeAlexa({ automationId: "amzn1.alexa.automation.x" }), routineSpec);
   assert.equal(ok.automationId, "amzn1.alexa.automation.x");
@@ -121,18 +122,16 @@ test("routine writes declare a UTF-8 JSON body", async () => {
 });
 
 test("locale and schedule timezone default to the env configuration", async () => {
-  const saved = { lang: process.env.ALEXA_MCP_ACCEPT_LANGUAGE, tz: process.env.ALEXA_MCP_TIMEZONE };
-  process.env.ALEXA_MCP_ACCEPT_LANGUAGE = "pt-BR";
-  process.env.ALEXA_MCP_TIMEZONE = "America/Sao_Paulo";
+  const keys = ["ALEXA_MCP_ACCEPT_LANGUAGE", "ALEXA_MCP_TIMEZONE"];
+  const saved = keys.map((k) => process.env[k]);
+  process.env.ALEXA_MCP_ACCEPT_LANGUAGE = "en-US";
+  process.env.ALEXA_MCP_TIMEZONE = "America/New_York";
   try {
     const c = await accountContext(fakeAlexa({}));
-    assert.equal(c.locale, "pt-BR");
+    assert.equal(c.locale, "en-US");
     const p = JSON.parse(buildTrigger({ kind: "schedule", time: "07:00" }, c).payload);
-    assert.equal(p.schedule.timeZoneId, "America/Sao_Paulo");
+    assert.equal(p.schedule.timeZoneId, "America/New_York");
   } finally {
-    for (const [key, value] of [["ALEXA_MCP_ACCEPT_LANGUAGE", saved.lang], ["ALEXA_MCP_TIMEZONE", saved.tz]]) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    keys.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
   }
 });
