@@ -122,7 +122,9 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_update_list_item` | Edit a list item's text / mark complete | **yes** |
 | `alexa_delete_list_item` | Remove a list item | **yes** |
 | `alexa_create_group` | Create a smart-home group (room/space) | **yes** |
-| `alexa_update_group` | Rename a group / set members (read-modify-write) | **yes** |
+| `alexa_update_group` | Rename a group / set members (read-modify-write, verified: fails if Amazon drops a member) | **yes** |
+| `alexa_move_to_group` | Move devices from their current group into another (Amazon drops a device added to a second group) | **yes** |
+| `alexa_rename_device` | Rename an Echo or other registered device by serial or name, verified | **yes** |
 | `alexa_delete_group` | Delete a smart-home group (members untouched) | **yes** |
 | `alexa_set_smarthome_enablement` | Enable/disable a smart-home device | **yes** |
 | `alexa_create_reminder` | Create a reminder on a device | **yes** |

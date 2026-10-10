@@ -12,6 +12,7 @@ import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
 import { writeRoutine, setRoutineEnabled, renameRoutine, type TriggerSpec } from "./routines.js";
+import { updateGroup, moveToGroup, renameDevice } from "./groups.js";
 import { flattenAppliances, collectRoutineTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
@@ -997,24 +998,55 @@ if (ALLOW_WRITE) {
     async ({ groupId, name, applianceIds }) => {
       try {
         const alexa = await getAlexa();
-        const g: any = await call((cb) => alexa.getSmarthomeGroups(cb));
-        const cur = (g?.applianceGroups ?? []).find((x: any) => (x.groupId ?? x.entityId) === groupId);
-        if (!cur) return fail(`No group ${groupId}`);
-        const body = {
-          name: name ?? cur.name,
-          applianceIds: applianceIds ?? cur.applianceIds ?? [],
-          type: cur.type ?? "SPACE",
-        };
-        const result = await new Promise<any>((resolve, reject) => {
-          (alexa as any).httpsGet(
-            true,
-            `/api/phoenix/group/${encodeURIComponent(groupId)}`,
-            (err: any, b: any) => (err ? reject(err) : resolve(b ?? { success: true })),
-            { method: "PUT", data: JSON.stringify(body), headers: { "Content-Type": "application/json" } },
-          );
-        });
-        if (result?.success !== true) return fail(`Update returned: ${JSON.stringify(result)}`);
-        return ok({ updated: groupId, name: body.name, memberCount: body.applianceIds.length });
+        const g = await updateGroup(alexa, groupId, { name, applianceIds });
+        return ok({ updated: groupId, name: g.name, memberCount: g.applianceIds.length });
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_move_to_group",
+    {
+      title: "Move devices to another group",
+      description:
+        "Moves devices (applianceIds as shown by alexa_list_groups) into the target group, taking " +
+        "them out of whichever group holds them now. Needed because Amazon silently drops a device " +
+        "that is added to a second group. An Echo usually has two entries (the {\"dsn\",\"deviceType\"} " +
+        "JSON and an AAA_… id): pass both. Verifies the result and restores the previous " +
+        "membership if the add fails. Requires confirm:true.",
+      inputSchema: {
+        applianceIds: z.array(z.string().min(1)).min(1),
+        toGroupId: z.string(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ applianceIds, toGroupId }) => {
+      try {
+        const alexa = await getAlexa();
+        return ok(await moveToGroup(alexa, applianceIds, toGroupId));
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_rename_device",
+    {
+      title: "Rename a device",
+      description:
+        "Renames an Echo or other registered device (by serial number or exact current name, from " +
+        "alexa_list_devices) and verifies the new name. Note: integrations that derive names from " +
+        "it (e.g. Home Assistant's alexa_media_player notify service) can change too. " +
+        "Requires confirm:true.",
+      inputSchema: {
+        device: z.string(),
+        name: z.string().min(1),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ device, name }) => {
+      try {
+        const alexa = await getAlexa();
+        return ok(await renameDevice(alexa, device, name));
       } catch (e: any) { return fail(hint(e)); }
     },
   );
