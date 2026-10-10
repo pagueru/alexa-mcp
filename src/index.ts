@@ -12,7 +12,7 @@ import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
 import { writeRoutine, setRoutineEnabled, renameRoutine, type TriggerSpec } from "./routines.js";
-import { updateGroup, moveToGroup, renameDevice } from "./groups.js";
+import { updateGroup, moveToGroup, renameDevice, setGroupAudioDefault } from "./groups.js";
 import { flattenAppliances, collectRoutineTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
@@ -1024,6 +1024,30 @@ if (ALLOW_WRITE) {
       try {
         const alexa = await getAlexa();
         return ok(await moveToGroup(alexa, applianceIds, toGroupId));
+      } catch (e: any) { return fail(hint(e)); }
+    },
+  );
+
+  server.registerTool(
+    "alexa_set_group_audio_default",
+    {
+      title: "Set a group's default audio device",
+      description:
+        "Sets the AUDIO default device of a group (room) by serial number or exact account name, or " +
+        "clears it with device:null. This is how the app stores the room of third-party speakers " +
+        "(e.g. Xiaomi), which Amazon refuses as group members, so use it instead of " +
+        "alexa_move_to_group for them. A device lives in one room: it is also removed from every " +
+        "other group where it was the default. Requires confirm:true.",
+      inputSchema: {
+        groupId: z.string(),
+        device: z.string().min(1).nullable(),
+        confirm: z.literal(true),
+      },
+    },
+    async ({ groupId, device }) => {
+      try {
+        const alexa = await getAlexa();
+        return ok(await setGroupAudioDefault(alexa, groupId, device));
       } catch (e: any) { return fail(hint(e)); }
     },
   );

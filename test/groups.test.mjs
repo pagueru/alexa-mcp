@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { missingMembers, updateGroup, moveToGroup, renameDevice } from "../dist/groups.js";
+import { missingMembers, updateGroup, moveToGroup, renameDevice, setGroupAudioDefault, timing } from "../dist/groups.js";
+
+timing.settleMs = 0;
 
 const ECHO = '{"dsn":"SN1","deviceType":"DT1"}';
 
@@ -16,6 +18,7 @@ const fakeGroups = (groups, { refuse = {} } = {}) => ({
     const body = JSON.parse(flags.data);
     const others = groups.filter((x) => x !== g).flatMap((x) => x.applianceIds);
     g.name = body.name;
+    g.defaults = body.defaults ?? []; // like Amazon, a PUT without defaults wipes them
     g.applianceIds = body.applianceIds.filter((m) => !others.includes(m) && !(refuse[g.groupId] ?? []).includes(m));
     cb(null, { success: true });
   },
@@ -97,4 +100,44 @@ test("moveToGroup retries the add while Amazon still holds the device in the old
   };
   await moveToGroup(alexa, [ECHO], "g2", 0);
   assert.ok(alexa.groups[1].applianceIds.includes(ECHO));
+});
+
+// A third-party speaker: not accepted as a group member, only as the group's AUDIO default.
+const speaker = (serial) => ({
+  defaultType: "AUDIO",
+  endpointType: "ALEXA",
+  defaultId: { __type: "AmazonBridgeIdentity:x", deviceType: "SPK", deviceSerialNumber: serial },
+});
+
+const withSpeaker = () => {
+  const alexa = fakeGroups([
+    { name: "Kitchen", groupId: "g1", applianceIds: [], defaults: [speaker("SN2")], childIds: [], type: "SPACE" },
+    { name: "Hall", groupId: "g2", applianceIds: ["LAMP"], defaults: [], childIds: [], type: "SPACE" },
+  ]);
+  alexa.getDevices = (cb) => cb(null, { devices: [{ serialNumber: "SN2", accountName: "Speaker", deviceType: "SPK" }] });
+  return alexa;
+};
+
+test("updateGroup keeps the group's default devices", async () => {
+  const alexa = withSpeaker();
+  await updateGroup(alexa, "g1", { name: "Kitchen 2" });
+  assert.equal(alexa.groups[0].defaults.length, 1);
+  assert.equal(alexa.groups[0].defaults[0].defaultId.deviceSerialNumber, "SN2");
+});
+
+test("setGroupAudioDefault moves a third-party speaker's room by its default", async () => {
+  const alexa = withSpeaker();
+  const res = await setGroupAudioDefault(alexa, "g2", "Speaker");
+  assert.deepEqual(res, { group: "Hall", device: "SN2", previous: [], clearedFrom: ["Kitchen"] });
+  assert.equal(alexa.groups[0].defaults.length, 0);
+  assert.equal(alexa.groups[1].defaults[0].defaultId.deviceSerialNumber, "SN2");
+  assert.deepEqual(alexa.groups[1].applianceIds, ["LAMP"]);
+});
+
+test("setGroupAudioDefault clears the default with null and rejects unknown devices", async () => {
+  const alexa = withSpeaker();
+  const res = await setGroupAudioDefault(alexa, "g1", null);
+  assert.deepEqual(res.previous, ["SN2"]);
+  assert.equal(alexa.groups[0].defaults.length, 0);
+  await assert.rejects(setGroupAudioDefault(alexa, "g2", "nope"), { message: /No device/ });
 });
