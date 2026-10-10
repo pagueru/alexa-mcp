@@ -74,7 +74,7 @@ export async function updateGroup(
   if (dropped.length) {
     throw new Error(
       `Amazon dropped ${dropped.length} member(s) from "${after.name}": ${dropped.join(", ")}. ` +
-        "A device that belongs to another group is not accepted; use alexa_move_to_group.",
+        "A device that already belongs to another group is refused (use alexa_move_to_group); some third-party devices are never accepted in groups.",
     );
   }
   return after;
