@@ -5,6 +5,8 @@ import {
   buildSequence,
   buildBody,
   actionNode,
+  accountContext,
+  writeRoutine,
 } from "../dist/routines.js";
 
 const ctx = { customerId: "CUST1", marketplaceId: "MKT1", locale: "de-DE" };
@@ -39,7 +41,7 @@ test("schedule trigger without days is daily", () => {
   const t = buildTrigger({ kind: "schedule", time: "07:10" }, ctx);
   const p = JSON.parse(t.payload);
   assert.equal(p.schedule.triggerTime, "071000");
-  assert.equal(p.schedule.recurrence, "RRULE:FREQ=DAILY;INTERVAL=1");
+  assert.equal(p.schedule.recurrence, "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=SU,MO,TU,WE,TH,FR,SA");
 });
 
 test("actionNode auto-derives skillId + keeps operationPayload as an object", () => {
@@ -72,4 +74,65 @@ test("buildBody stringifies sub-fields + omits behaviorId on create", () => {
   // update includes behaviorId
   const upd = buildBody({ name: "R", status: "DISABLED", trigger, sequence: seq, behaviorId: "id1" });
   assert.equal(upd.behaviorId, "id1");
+});
+
+// Stand-in for alexa-remote2: one Echo, validate echoes the payload back as VALID,
+// the routine write answers `writeResponse`; every request is recorded in `calls`.
+const fakeAlexa = (writeResponse) => {
+  const calls = [];
+  return {
+    calls,
+    getDevices(cb) {
+      cb(null, { devices: [{ deviceFamily: "ECHO", deviceOwnerCustomerId: "CUST1", deviceType: "DT1", serialNumber: "SN1" }] });
+    },
+    httpsGet(_noCheck, path, cb, flags) {
+      calls.push({ path, flags });
+      if (path === "/api/behaviors/operation/validate") {
+        const { operationPayload } = JSON.parse(flags.data);
+        return cb(null, { result: "VALID", operationPayload });
+      }
+      cb(null, writeResponse);
+    },
+  };
+};
+
+const routineSpec = {
+  name: "R",
+  trigger: { kind: "utterance", utterance: "que horas são" },
+  actions: [{ type: "Alexa.TextCommand", operationPayload: { text: "que horas são" } }],
+};
+
+test("writeRoutine throws when Alexa rejects the write with a message", async () => {
+  for (const message of ["Input failed to validate.", "Object not found."]) {
+    const alexa = fakeAlexa({ message });
+    await assert.rejects(writeRoutine(alexa, routineSpec), new RegExp(message.replace(".", "\\.")));
+  }
+  const ok = await writeRoutine(fakeAlexa({ automationId: "amzn1.alexa.automation.x" }), routineSpec);
+  assert.equal(ok.automationId, "amzn1.alexa.automation.x");
+});
+
+test("routine writes declare a UTF-8 JSON body", async () => {
+  const alexa = fakeAlexa({ automationId: "amzn1.alexa.automation.x" });
+  await writeRoutine(alexa, routineSpec);
+  assert.ok(alexa.calls.length >= 2);
+  for (const { flags } of alexa.calls) {
+    assert.equal(flags.headers["Content-Type"], "application/json; charset=utf-8");
+  }
+});
+
+test("locale and schedule timezone default to the env configuration", async () => {
+  const saved = { lang: process.env.ALEXA_MCP_ACCEPT_LANGUAGE, tz: process.env.ALEXA_MCP_TIMEZONE };
+  process.env.ALEXA_MCP_ACCEPT_LANGUAGE = "pt-BR";
+  process.env.ALEXA_MCP_TIMEZONE = "America/Sao_Paulo";
+  try {
+    const c = await accountContext(fakeAlexa({}));
+    assert.equal(c.locale, "pt-BR");
+    const p = JSON.parse(buildTrigger({ kind: "schedule", time: "07:00" }, c).payload);
+    assert.equal(p.schedule.timeZoneId, "America/Sao_Paulo");
+  } finally {
+    for (const [key, value] of [["ALEXA_MCP_ACCEPT_LANGUAGE", saved.lang], ["ALEXA_MCP_TIMEZONE", saved.tz]]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
