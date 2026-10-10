@@ -34,7 +34,10 @@ and verified end-to-end.
 | Find routines with **broken references** (dangling targets) | ✅ |
 | List smart-home devices (with source + reachability) | ✅ |
 | **Delete a smart-home device** (orphan cleanup, reference-safe) | ✅ (write-gated) |
-| Scenes, groups (list/create/delete), activity history | ✅ |
+| Scenes, activity history | ✅ |
+| **Rooms (groups)**: list with named members, create/rename/delete, move devices between rooms, set a speaker's room | ✅ (write-gated; verified) |
+| **Rename** routines and devices; several voice phrases per routine | ✅ (write-gated; verified) |
+| Readable listings: routine summaries, named group members, the room of every device | ✅ |
 | Announcements / TTS / SSML, media transport, volume, DND | ✅ (write-gated) |
 | Shopping / to-do lists (read + add) | ✅ |
 
@@ -92,8 +95,8 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 
 | Tool | Purpose | Writes |
 |---|---|---|
-| `alexa_list_devices` | Registered Echos / apps / Fire TVs | no |
-| `alexa_list_routines` | All routines: id, name, status, triggers | no |
+| `alexa_list_devices` | Registered Echos / apps / Fire TVs, with the room (group) each is in | no |
+| `alexa_list_routines` | All routines: id, name, status, triggers. `summary: true` returns readable lines instead (every voice phrase or schedule, every action with device names) | no |
 | `alexa_get_routine` | One routine as raw JSON (incl. action sequence) | no |
 | `alexa_list_scenes` | Smart-home entities incl. scenes | no |
 | `alexa_get_activity` | Activity history (customer-history-records) | no |
@@ -102,13 +105,14 @@ claude mcp add alexa --env ALEXA_MCP_ALLOW_WRITE=1 -- node /ABSOLUTE/PATH/alexa-
 | `alexa_get_volumes` | Current speaker volume of every device | no |
 | `alexa_get_do_not_disturb` | Do-Not-Disturb status per device | no |
 | `alexa_query_device` | Live state of smart-home devices/groups by applianceId | no |
-| `alexa_list_groups` | Smart-home groups (rooms/spaces) with members | no |
+| `alexa_list_groups` | Smart-home groups (rooms) with members by id and name, and the group's audio default device | no |
 | `alexa_list_lists` | Shopping / to-do / custom lists | no |
 | `alexa_get_list_items` | Items of a list by id | no |
 | `alexa_get_player_info` | Now-playing / media player state of a device | no |
 | `alexa_list_notifications` | Reminders / alarms / timers (id, time, label, status) | no |
-| `alexa_create_routine` | Create a routine (voice- or time-triggered) with one or more actions | **yes** |
+| `alexa_create_routine` | Create a routine (voice- or time-triggered, one or several voice phrases) with one or more actions | **yes** |
 | `alexa_update_routine` | Update a routine in place (full re-spec) | **yes** |
+| `alexa_rename_routine` | Rename a routine, keeping every trigger, phrase, action and the status (works for routines `update` cannot express) | **yes** |
 | `alexa_set_routine_enabled` | Enable/disable a routine by id (rebuilds + PUTs with flipped status) | **yes** |
 | `alexa_trigger_routine` | Execute a routine now | **yes** |
 | `alexa_delete_routine` | Delete a routine + verify | **yes** |
@@ -145,8 +149,80 @@ tools handle both). Example create:
   "confirm": true }
 ```
 
+Several voice phrases for one routine (the app allows many; the first is the primary one):
+
+```json
+{ "name": "Light - Kitchen ceiling - On",
+  "triggerUtterances": ["turn on the kitchen", "kitchen light on", "light up the kitchen"],
+  "actions": [ { "type": "Alexa.SmartHome.Batch",
+                 "operationPayload": { "target": "<entityId from alexa_list_smarthome_devices>",
+                                       "operations": [ { "type": "turnOn" } ] } } ],
+  "confirm": true }
+```
+
 Write tools are only registered when `ALEXA_MCP_ALLOW_WRITE=1`, and each destructive call also
 requires an explicit `confirm: true` argument.
+
+## Working with routines
+
+- **Find a routine by what it does:** `alexa_list_routines` with `summary: true` shows, per routine,
+  every voice phrase or the schedule, and every action in order with device names resolved
+  (`SmartHome.Batch turnOn → Kitchen ceiling`, `Speak "…" on Echo Kitchen`). The raw listing
+  carries full payloads and is several times longer.
+- **Rename without losing anything:** `alexa_rename_routine` rebuilds the routine from its current
+  state and changes only the name. `alexa_update_routine` re-specs the whole routine, so it only
+  fits routines it can express (one trigger, plain actions); use rename for the rest.
+- **Voice phrases:** pass `triggerUtterances` (a list) instead of `triggerUtterance` to register
+  several phrases.
+- **Schedules:** `triggerTime` is `HH:MM`; without `triggerDays` the routine runs every day (sent as
+  a weekly rule with all seven days, which is how the app stores it; `FREQ=DAILY` is rejected).
+- **Always read back:** Amazon answers a refused write with HTTP 200 and a `message`; the write
+  tools turn that into an error and verify the result, but a read after a write can still lag for a
+  moment.
+
+## Rooms, groups and devices
+
+- A **group** (`type: SPACE`) is a room. Its **members** are listed by id: an Echo has two entries,
+  the `{"dsn":"…","deviceType":"…"}` JSON and an `AAA_…` id; lamps and plugs use `SKILL_…` ids.
+  `alexa_list_groups` shows each member with its name.
+- **Third-party speakers** (e.g. Xiaomi with Alexa built in) are refused as members. The app stores
+  their room as the group's **audio default** (`defaults`); set it with
+  `alexa_set_group_audio_default`. `alexa_list_devices` shows the room either way.
+- **Moving an Echo or a smart-home device:** use `alexa_move_to_group` (pass every id of the device).
+  Amazon accepts a group write and silently drops a device that still belongs to another group; the
+  tool takes it out of the old group first, retries the add and restores the old group if it fails.
+  A device added to a group recently may be refused for a while (longer than ~20 s was measured).
+- **Group writes never wipe the default device:** the group `PUT` is a full replace and erases the
+  audio default when it is left out, so the tools send the current one back.
+- **Rename a device:** `alexa_rename_device` (serial or exact name). Integrations that build names
+  from it change too, e.g. Home Assistant's `alexa_media_player` notify service
+  (`notify.alexa_media_<name>`), while the entity id in HA's registry stays.
+
+## Using a non-German account
+
+The defaults are German (`amazon.de`, `de-DE`, `Europe/Berlin`). Set these before `npm run auth`
+and for the server; example for Brazil:
+
+```bash
+export ALEXA_MCP_AMAZON_PAGE=amazon.com.br
+export ALEXA_MCP_ACCEPT_LANGUAGE=pt-BR
+export ALEXA_MCP_PROXY_LANGUAGE=pt_BR          # language of the login page
+export ALEXA_MCP_MARKETPLACE_ID=A2Q3Y263D00KWC # marketplace of voice triggers
+export ALEXA_MCP_TIMEZONE=America/Sao_Paulo
+```
+
+The marketplace id of your account is visible in the voice triggers of your existing routines
+(`alexa_get_routine` → `triggers[].payload.marketplaceId`).
+
+## Amazon quirks worth knowing
+
+- Refused writes come back as HTTP 200 with `{"message":"…"}` (`Input failed to validate.`,
+  `Object not found.`); some are accepted and silently dropped (group members).
+- Writes take effect with a delay; reads right after can be stale.
+- In batch work (many routines or groups), pause about 3 s between calls; fast bursts make Amazon
+  hold the answers until the client times out. Validating a `SmartHome.Batch` action can take ~20 s.
+- Text sent without `charset=utf-8` is stored as Latin-1 (`sÃ£o`); the tools send the charset.
+- `ALEXA_CURRENT_DSN` in an action means "the device that heard the command".
 
 ## Configuration (environment variables)
 
@@ -176,9 +252,9 @@ requires an explicit `confirm: true` argument.
 ## Known limitations
 
 - **Unofficial API** — can break whenever Amazon changes it.
-- **Routine deletion endpoint is unverified.** `alexa_delete_routine` attempts
-  `DELETE /api/behaviors/v2/automations/{id}`, which is not documented or confirmed. Verify the
-  real request via browser DevTools before relying on it.
+- **Routine deletion** uses `DELETE /api/behaviors/automations/{id}` (the non-`v2` path; `v2` is
+  read-only). Verified live, with a read-back after the delete.
+- **Third-party speakers cannot be group members**; their room is the group's audio default.
 - **Device deletion may not be permanent** if the underlying source still advertises the device:
   a skill that is still linked (and whose backend responds) or a Matter bridge will re-add it on
   the next discovery. Orphans whose backend is gone (unlinked skill, removed integration) stay

@@ -63,6 +63,9 @@ server re-writes the file each time.
 | Smart-home entities / scenes | `GET /api/behaviors/entities?skillId=amzn1.ask.1p.smarthome` | `getSmarthomeEntities` |
 | Smart-home devices | `GET /api/phoenix` (nested) | `getSmarthomeDevices` |
 | Delete smart-home device | `DELETE /api/phoenix/appliance/{id}` | `deleteSmarthomeDevice` |
+| Groups (rooms) | `GET /api/phoenix/group` | `getSmarthomeGroups` |
+| Create / update / delete group | `POST /api/phoenix/group`, `PUT` / `DELETE /api/phoenix/group/{groupId}` | raw `httpsGet` / `deleteSmarthomeGroup` |
+| Rename a device | `PUT /api/devices-v2/device/{serial}` | `renameDevice(serialOrName, name)` |
 | Activity history | `GET …/alexa-privacy/apd/rvh/customer-history-records-v2` | `getCustomerHistoryRecords` |
 
 Notes:
@@ -159,6 +162,48 @@ full routine body with `status` flipped** (`ENABLED`/`DISABLED`), exactly like a
 live. `alexa_set_routine_enabled` rebuilds the body from the routine's current state
 (re-encoding triggers, re-validating each action) and PUTs it.
 
+### Rename a routine
+
+`alexa_rename_routine` reuses the enable/disable mechanism: rebuild the write body from the
+routine's current state and PUT it with a new `name` (everything else, including every utterance
+variant and the status, is carried over). Checked against all of a real account's routines in
+`dryRun`: triggers, phrases, actions and status all survive the round trip. After the PUT the
+routine is read back and the name compared.
+
+### Groups (rooms), members and the audio default
+
+A group is `{name, groupId, applianceIds, type: "SPACE", defaults, childIds, …}` and is **a room**.
+Findings, all verified live on a Brazilian account (2026-10-09/10):
+
+- **Members** (`applianceIds`) are strings: Echo devices appear twice — the JSON string
+  `{"dsn":"<serial>","deviceType":"<type>"}` and an `AAA_…` smart-home id — lamps/plugs as `SKILL_…`.
+- **Third-party speakers** (Alexa built-in, e.g. Xiaomi) are **refused** as members. Their room is
+  the group's **audio default**:
+
+  ```jsonc
+  "defaults": [ { "defaultType": "AUDIO", "endpointType": "ALEXA",
+                  "defaultId": { "__type": "AmazonBridgeIdentity:http://internal.amazon.com/coral/com.amazon.dee.web.coral.model/",
+                                 "deviceType": "<type>", "deviceSerialNumber": "<serial>" } } ]
+  ```
+
+  with `defaultMetadataByType.audio` flipping to `{"selectedBy":"USER","managedBy":"MANUAL"}` once set
+  (a fresh group starts as `SYSTEM` / `AUTOMATIC_GROUP_MRMG_SYNC_PROCESS`). A device is the default
+  of one room only.
+- **`PUT /api/phoenix/group/{id}` is a full replace.** Omitting `defaults` erases the audio default
+  (measured on a scratch group); `alexa_update_group` therefore sends back the current `defaults`
+  and `childIds`. Body: `{name, applianceIds, type, defaults, childIds}`.
+- **Silent drops:** a PUT that lists a device already belonging to another group answers
+  `{"success":true}` and stores everything except that device. So every group write is verified by
+  reading the group back (re-reading a few times, because the write lands with a delay), and
+  `alexa_move_to_group` removes the device from its old group first, retries the add with a growing
+  pause and restores the old group if it never sticks. Right after a device joined a group, the next
+  group's add can keep being refused for longer than ~20 s; the same add succeeded minutes later.
+- **Rename a device:** `PUT /api/devices-v2/device/{serial}` with
+  `{accountName, serialNumber, deviceAccountId, deviceType}` (`alexa-remote2` `renameDevice`). The
+  new name shows up in the next device list; clients that derive names from it follow (Home
+  Assistant's `alexa_media_player` renames the entity's original name and the `notify` service,
+  while the entity id in the registry is kept).
+
 ### The `applianceId` URL-encoding requirement (important)
 
 Smart-home `applianceId`s from a skill look like:
@@ -202,4 +247,8 @@ src/
   auth-cli.ts  # `npm run auth`: interactive proxy login + smoke test
   doctor.ts    # `npm run doctor`: config / token / login-URL check (no network)
   smoke.ts     # `npm run smoke`: read devices/routines/scenes with the stored token
+  routines.ts  # routine write API: build/validate/PUT bodies, rename, enable/disable
+  groups.ts    # group (room) writes with read-back verification, move, audio default, device rename
+  describe.ts  # readable views: routine summaries, named group members, room of each device
+  util.ts      # pure helpers (smart-home tree flattening, routine target collection)
 ```

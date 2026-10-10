@@ -12,7 +12,8 @@ import { z } from "zod";
 import type AlexaRemote from "alexa-remote2";
 import { initAlexa } from "./alexa.js";
 import { writeRoutine, setRoutineEnabled, renameRoutine, type TriggerSpec } from "./routines.js";
-import { updateGroup, moveToGroup, renameDevice, setGroupAudioDefault } from "./groups.js";
+import { readGroups, updateGroup, moveToGroup, renameDevice, setGroupAudioDefault } from "./groups.js";
+import { loadNames, describeRoutine, describeGroup, roomsBySerial } from "./describe.js";
 import { flattenAppliances, collectRoutineTargets } from "./util.js";
 
 const ALLOW_WRITE = process.env.ALEXA_MCP_ALLOW_WRITE === "1";
@@ -64,19 +65,23 @@ server.registerTool(
   "alexa_list_devices",
   {
     title: "List Alexa devices",
-    description: "All registered Echos / apps / Fire TVs (name, type, serial number).",
+    description:
+      "All registered Echos / apps / Fire TVs (name, type, serial number) and the room (group) each one is in, " +
+      "whether as a group member or as the group's audio default (third-party speakers).",
     inputSchema: {},
   },
   async () => {
     try {
       const alexa = await getAlexa();
       const res: any = await call((cb) => alexa.getDevices(cb));
+      const rooms = roomsBySerial(await readGroups(alexa).catch(() => []));
       const devices = (res?.devices ?? []).map((d: any) => ({
         name: d.accountName,
         type: d.deviceType,
         serial: d.serialNumber,
         online: d.online,
         family: d.deviceFamily,
+        room: rooms.get(d.serialNumber) ?? null,
       }));
       return ok(devices);
     } catch (e: any) {
@@ -91,13 +96,23 @@ server.registerTool(
     title: "List Alexa routines",
     description:
       "All routines: automationId, name, status, trigger types. Use this to identify a " +
-      "routine (e.g. a scheduled one that fires an unexpected scene).",
-    inputSchema: { limit: z.number().int().positive().max(5000).optional() },
+      "routine (e.g. a scheduled one that fires an unexpected scene). With summary:true each " +
+      "routine comes as readable lines instead of raw payloads: every voice phrase or the " +
+      "schedule, and every action in order with device names resolved (far fewer tokens, and " +
+      "enough to find a routine by what it does).",
+    inputSchema: {
+      limit: z.number().int().positive().max(5000).optional(),
+      summary: z.boolean().optional(),
+    },
   },
-  async ({ limit }) => {
+  async ({ limit, summary }) => {
     try {
       const alexa = await getAlexa();
       const res: any = await call((cb) => alexa.getAutomationRoutines(limit ?? 2000, cb));
+      if (summary) {
+        const names = await loadNames(alexa);
+        return ok((Array.isArray(res) ? res : []).map((r: any) => describeRoutine(r, names)));
+      }
       const list = (Array.isArray(res) ? res : []).map((r: any) => ({
         automationId: r.automationId,
         name: r.name,
@@ -348,15 +363,21 @@ server.registerTool(
 
 server.registerTool(
   "alexa_list_groups",
-  { title: "List smart-home groups", description: "Smart-home groups (rooms/spaces) with members.", inputSchema: {} },
+  {
+    title: "List smart-home groups",
+    description:
+      "Smart-home groups (rooms/spaces). Each group lists its members by id and name (an Echo has two " +
+      "entries: the {\"dsn\",\"deviceType\"} JSON and an AAA_… id) and its audioDefault, which is where " +
+      "third-party speakers (e.g. Xiaomi) live because Amazon refuses them as members. " +
+      "Use the ids with alexa_update_group / alexa_move_to_group and the groupId with " +
+      "alexa_set_group_audio_default.",
+    inputSchema: {},
+  },
   async () => {
     try {
       const alexa = await getAlexa();
-      const res: any = await call((cb) => alexa.getSmarthomeGroups(cb));
-      const groups = (res?.applianceGroups ?? []).map((g: any) => ({
-        name: g.name, groupId: g.groupId ?? g.entityId, applianceIds: g.applianceIds, type: g.type,
-      }));
-      return ok(groups);
+      const [groups, names] = await Promise.all([readGroups(alexa), loadNames(alexa)]);
+      return ok(groups.map((g) => describeGroup(g, names)));
     } catch (e: any) { return fail(hint(e)); }
   },
 );
